@@ -45,6 +45,11 @@ Slack DM ─(Socket Mode)─> slack_bolt ─> ADK Runner(スレッド単位の�
                                    確認カード ─[ボタン]→ executor ─> freee API
 ```
 
+## ドキュメント
+
+- [設計書](docs/design-slack-app-freee-hr.md):構成、コンポーネント、認証、セッション、デプロイ
+- [ADR 一覧](docs/adr/README.md):決定の理由と、採らなかった選択肢
+
 ## セットアップ
 
 ### 1. Slack アプリ
