@@ -59,7 +59,8 @@ class HRApi:
             "/api/v1/approval_flow_routes",
             params={"company_id": self.company_id, "usage": "AttendanceWorkflow"},
         )
-        return res.get("approval_flow_routes", [])
+        routes: list[dict[str, Any]] = res.get("approval_flow_routes", [])
+        return routes
 
     async def overtime_setting(self, day: date) -> dict[str, Any]:
         return await self.client.request(

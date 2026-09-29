@@ -37,17 +37,19 @@ class NotLinkedError(Exception):
 
 async def call_api(
     http: httpx.AsyncClient, access_token: str, method: str, path: str, **kwargs: Any
-) -> Any:
+) -> dict[str, Any]:
     res = await http.request(
         method, f"{API_BASE}{path}", headers={"Authorization": f"Bearer {access_token}"}, **kwargs
     )
     if res.status_code >= 400:
+        error: Any
         try:
-            body = res.json()
+            error = res.json()
         except ValueError:
-            body = res.text
-        raise FreeeAPIError(res.status_code, body)
-    return res.json() if res.content else None
+            error = res.text
+        raise FreeeAPIError(res.status_code, error)
+    data: dict[str, Any] = res.json() if res.content else {}
+    return data
 
 
 class TokenProvider:
@@ -97,7 +99,7 @@ class FreeeClient:
         self.tokens = tokens
         self.slack_user_id = slack_user_id
 
-    async def request(self, method: str, path: str, **kwargs: Any) -> Any:
+    async def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         token = await self.tokens.access_token(self.slack_user_id)
         try:
             return await call_api(self.http, token, method, path, **kwargs)

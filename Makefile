@@ -2,7 +2,7 @@
 IMAGE ?= freee-hr-bot
 NAME  ?= freee-hr-bot
 
-.PHONY: build run stop logs restart key test lint
+.PHONY: build run stop logs restart key test lint typecheck check
 
 build:
 	container build --tag $(IMAGE) --file Containerfile .
@@ -30,3 +30,8 @@ test:
 
 lint:
 	uv run ruff check . && uv run ruff format --check .
+
+typecheck:
+	uv run mypy
+
+check: lint typecheck test

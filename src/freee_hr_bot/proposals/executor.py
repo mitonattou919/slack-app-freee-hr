@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from datetime import date
+from typing import Any
 
 from freee_hr_bot.freee.client import FreeeAPIError
 from freee_hr_bot.proposals.models import (
@@ -44,7 +45,9 @@ def _error_text(e: Exception) -> str:
     return str(e)
 
 
-def overtime_suggestion(day: date, clock_out: str, response: dict) -> OvertimeSuggestion | None:
+def overtime_suggestion(
+    day: date, clock_out: str, response: dict[str, Any]
+) -> OvertimeSuggestion | None:
     """Suggest an overtime request when the registered clock-out is past the scheduled end."""
     scheduled_end = from_freee_datetime(day, response.get("normal_work_clock_out_at"))
     if not scheduled_end or response.get("day_pattern", "normal_day") != "normal_day":
@@ -55,7 +58,7 @@ def overtime_suggestion(day: date, clock_out: str, response: dict) -> OvertimeSu
     return OvertimeSuggestion(date=day, start=scheduled_end, end=f"{end // 60:02d}:{end % 60:02d}")
 
 
-async def execute(deps: Deps, slack_user_id: str, payload: dict) -> ExecutionResult:
+async def execute(deps: Deps, slack_user_id: str, payload: dict[str, Any]) -> ExecutionResult:
     proposal = load_proposal(payload)
     hr = await hr_for(deps, slack_user_id)
 

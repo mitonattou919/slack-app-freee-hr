@@ -1,7 +1,8 @@
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
-from sqlalchemy import update
+from sqlalchemy import CursorResult, update
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from freee_hr_bot.db.models import Base, Proposal, UserLink, UserPreference
@@ -55,7 +56,7 @@ class Repository:
         *,
         slack_user_id: str,
         kind: str,
-        payload: dict,
+        payload: dict[str, Any],
         channel_id: str,
         thread_ts: str,
         ttl: timedelta,
@@ -84,14 +85,14 @@ class Repository:
                 p.created_at = _aware(p.created_at)
             return p
 
-    async def update_proposal(self, proposal_id: str, **values) -> None:
+    async def update_proposal(self, proposal_id: str, **values: Any) -> None:
         async with self._sessions() as s, s.begin():
             await s.execute(update(Proposal).where(Proposal.id == proposal_id).values(**values))
 
     async def transition(self, proposal_id: str, from_status: str, to_status: str) -> bool:
         """Atomically move a proposal between states; False if someone else got there first."""
         async with self._sessions() as s, s.begin():
-            res = await s.execute(
+            res: CursorResult[Any] = await s.execute(  # type: ignore[assignment]
                 update(Proposal)
                 .where(Proposal.id == proposal_id, Proposal.status == from_status)
                 .values(status=to_status)

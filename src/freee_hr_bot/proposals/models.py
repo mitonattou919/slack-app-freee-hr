@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -67,11 +67,10 @@ class OvertimeProposal(BaseModel):
 AnyProposal = WorkRecordProposal | PaidLeaveProposal | OvertimeProposal
 
 
-def load_proposal(payload: dict) -> AnyProposal:
-    kind = payload.get("kind")
-    model: type[AnyProposal] = {
+def load_proposal(payload: dict[str, Any]) -> AnyProposal:
+    models: dict[str, type[AnyProposal]] = {
         "work_records": WorkRecordProposal,
         "paid_leave": PaidLeaveProposal,
         "overtime": OvertimeProposal,
-    }[kind]  # type: ignore[index]
-    return model.model_validate(payload)
+    }
+    return models[payload["kind"]].model_validate(payload)

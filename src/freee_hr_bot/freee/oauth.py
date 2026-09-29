@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any
 from urllib.parse import urlencode
 
 import httpx
@@ -54,7 +55,7 @@ class FreeeOAuth:
             {"grant_type": "refresh_token", "refresh_token": refresh_token}
         )
 
-    async def _token_request(self, data: dict) -> TokenSet:
+    async def _token_request(self, data: dict[str, Any]) -> TokenSet:
         data = {**data, "client_id": self.client_id, "client_secret": self.client_secret}
         res = await self.http.post(TOKEN_URL, data=data)
         if res.status_code != 200:

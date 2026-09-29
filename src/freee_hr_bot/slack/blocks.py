@@ -1,4 +1,5 @@
 import json
+from datetime import date
 from typing import Any
 
 from freee_hr_bot.proposals.models import (
@@ -33,7 +34,7 @@ def _context(text: str) -> dict[str, Any]:
     return {"type": "context", "elements": [{"type": "mrkdwn", "text": text}]}
 
 
-def _day(d) -> str:
+def _day(d: date) -> str:
     return f"{d.strftime('%m/%d')}({WEEKDAYS[d.weekday()]})"
 
 

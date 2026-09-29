@@ -11,7 +11,7 @@ from collections.abc import Callable
 from datetime import date
 from typing import Any, Literal
 
-from google.adk.tools import ToolContext
+from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel, Field, ValidationError
 
 from freee_hr_bot.freee.client import FreeeAPIError, NotLinkedError

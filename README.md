@@ -89,6 +89,7 @@ Mac がスリープしたり、電源が落ちたりしている間はボット�
 uv sync
 make test    # pytest(freee は respx でモック、LLM は偽モデルで ADK Runner ごとテスト)
 make lint
+make typecheck   # mypy (strict)
 uv run freee-hr-bot   # コンテナを使わずローカルで起動
 ```
 

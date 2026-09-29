@@ -18,8 +18,10 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "mypy>=2.3.1",
     "pytest>=8",
     "pytest-asyncio>=0.24",
+    "pytest-cov>=7.1.0",
     "respx>=0.21",
     "ruff>=0.6",
 ]
@@ -46,3 +48,16 @@ ignore = ["E501"]  # long Japanese message strings; ruff format handles code wid
 
 [project.scripts]
 freee-hr-bot = "freee_hr_bot.main:main"
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["freee_hr_bot"]
+mypy_path = "src"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# Slack Bolt passes untyped dicts / clients into listeners.
+module = ["freee_hr_bot.slack.handlers"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false

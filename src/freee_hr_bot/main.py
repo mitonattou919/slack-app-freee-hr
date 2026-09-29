@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -43,7 +43,7 @@ async def run() -> None:
             max_work_record_days=settings.max_work_record_days,
         )
 
-        def today():
+        def today() -> date:
             return datetime.now(settings.zone).date()
 
         agent = AgentRunner(
@@ -52,7 +52,8 @@ async def run() -> None:
         )
         app = AsyncApp(token=settings.slack_bot_token)
         register(app, deps=deps, oauth=oauth, agent=agent)
-        await AsyncSocketModeHandler(app, settings.slack_app_token).start_async()
+        handler = AsyncSocketModeHandler(app, settings.slack_app_token)
+        await handler.start_async()  # type: ignore[no-untyped-call]
 
 
 def main() -> None:
