@@ -5,7 +5,12 @@ import httpx
 import pytest
 import respx
 
-from freee_hr_bot.freee.client import FreeeAPIError, FreeeClient, NotLinkedError
+from freee_hr_bot.freee.client import (
+    MAX_CONCURRENT_REQUESTS,
+    FreeeAPIError,
+    FreeeClient,
+    NotLinkedError,
+)
 from freee_hr_bot.freee.oauth import TOKEN_URL
 from tests.conftest import API, USER, link_user
 
@@ -76,3 +81,23 @@ async def test_api_error_messages_are_extracted(tokens, http):
 async def test_unlinked_user(tokens):
     with pytest.raises(NotLinkedError):
         await tokens.access_token("U_UNKNOWN")
+
+
+@respx.mock
+async def test_concurrent_requests_are_bounded(tokens, http):
+    # freee times out when a month of days is fetched all at once
+    await link_user(tokens)
+    in_flight = peak = 0
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return httpx.Response(200, json={})
+
+    respx.get(f"{API}/users/me").mock(side_effect=slow)
+    client = FreeeClient(http, tokens, USER)
+    await asyncio.gather(*(client.request("GET", "/api/v1/users/me") for _ in range(31)))
+    assert peak <= MAX_CONCURRENT_REQUESTS

@@ -75,6 +75,16 @@ async def test_freee_error_message_reaches_model(tools, ctx):
 
 
 @respx.mock
+async def test_freee_timeout_is_reported_as_timeout(tools, ctx):
+    respx.get(f"{API}/employees/{EMPLOYEE_ID}/work_records/2026-09-28").mock(
+        side_effect=httpx.ReadTimeout("timed out")
+    )
+    res = await tools["get_work_records"](["2026-09-28"], ctx)
+    assert res["status"] == "error"
+    assert "タイムアウト" in res["message"]
+
+
+@respx.mock
 async def test_propose_paid_leave(tools, ctx, deps):
     routes(5)
     res = await tools["propose_paid_leave"]("2026-10-02", "morning", ctx, comment="通院")

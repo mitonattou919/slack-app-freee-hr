@@ -11,6 +11,7 @@ from collections.abc import Callable
 from datetime import date
 from typing import Any, Literal
 
+import httpx
 from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel, Field, ValidationError
 
@@ -45,6 +46,12 @@ def _error(e: Exception) -> dict[str, Any]:
         return {"status": "error", "message": " / ".join(e.messages) or f"HTTP {e.status}"}
     if isinstance(e, ProposalValidationError | ValidationError | ValueError):
         return {"status": "error", "message": str(e)}
+    if isinstance(e, httpx.TimeoutException):
+        logger.warning("freee API timed out: %r", e)
+        return {
+            "status": "error",
+            "message": "freee の応答がタイムアウトしました。期間を短くして再度お試しください",
+        }
     logger.exception("tool failed")
     return {
         "status": "error",

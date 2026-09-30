@@ -10,6 +10,8 @@ from freee_hr_bot.db.repo import Repository, utcnow
 from freee_hr_bot.freee.oauth import FreeeOAuth, TokenSet
 
 API_BASE = "https://api.freee.co.jp/hr"
+# freee times out when a whole month of days is requested at once.
+MAX_CONCURRENT_REQUESTS = 4
 
 
 class FreeeAPIError(Exception):
@@ -98,8 +100,13 @@ class FreeeClient:
         self.http = http
         self.tokens = tokens
         self.slack_user_id = slack_user_id
+        self._limit = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
     async def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        async with self._limit:
+            return await self._request(method, path, **kwargs)
+
+    async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         token = await self.tokens.access_token(self.slack_user_id)
         try:
             return await call_api(self.http, token, method, path, **kwargs)
