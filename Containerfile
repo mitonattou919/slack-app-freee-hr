@@ -9,6 +9,7 @@ COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY src ./src
+RUN chmod -R a+rX /app/src
 RUN uv sync --frozen --no-dev
 
 RUN useradd --create-home --uid 1000 bot && mkdir -p /app/data && chown bot /app/data
