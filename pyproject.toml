@@ -1,0 +1,63 @@
+[project]
+name = "freee-hr-bot"
+version = "0.1.0"
+description = "Slack (Socket Mode) agent for freee HR: natural-language attendance entry and leave/overtime requests"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "slack-bolt>=1.21",
+    "aiohttp>=3.10",
+    "google-adk>=1.0",
+    "httpx>=0.27",
+    "cryptography>=43",
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.20",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=7.1.0",
+    "respx>=0.21",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/freee_hr_bot"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]  # long Japanese message strings; ruff format handles code width
+
+[project.scripts]
+freee-hr-bot = "freee_hr_bot.main:main"
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["freee_hr_bot"]
+mypy_path = "src"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# Slack Bolt passes untyped dicts / clients into listeners.
+module = ["freee_hr_bot.slack.handlers"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
