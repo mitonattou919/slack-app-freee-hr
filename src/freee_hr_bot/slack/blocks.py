@@ -147,7 +147,7 @@ def proposal_card(proposal_id: str, p: AnyProposal, ttl_minutes: int) -> Blocks:
         blocks = [_section("*勤怠登録の確認*")]
         registrable = 0
         for e in p.entries:
-            new = f"{e.clock_in}〜{e.clock_out} / 休憩 {_ranges(e.breaks)}"
+            new = f"{e.clock_in}〜{e.clock_out} / 休憩 {_ranges(e.breaks or [])}"
             ex = e.existing or ExistingRecord()
             if not ex.is_editable:
                 blocks.append(

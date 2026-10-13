@@ -4,7 +4,7 @@ Nothing here writes to freee. Writes happen in executor.py after the owner confi
 """
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
@@ -25,6 +25,7 @@ from freee_hr_bot.proposals.models import (
 )
 from freee_hr_bot.proposals.validate import (
     from_freee_datetime,
+    resolve_breaks,
     validate_overtime_range,
     validate_work_entries,
 )
@@ -40,6 +41,7 @@ class Deps:
     company_id: int
     ttl: timedelta
     max_work_record_days: int
+    default_break: TimeRange = field(default_factory=lambda: TimeRange(start="12:00", end="13:00"))
 
 
 async def hr_for(deps: Deps, slack_user_id: str) -> HRApi:
@@ -98,6 +100,10 @@ async def draft_work_records(
     records = await asyncio.gather(*(hr.get_work_record(e.date) for e in entries))
     for entry, record in zip(entries, records, strict=True):
         entry.existing = parse_existing(entry.date, record)
+        if entry.breaks is None:
+            # Uneditable days are never written, so there is nothing to ask about.
+            editable = entry.existing.is_editable
+            entry.breaks = resolve_breaks(entry, deps.default_break) if editable else []
     proposal = WorkRecordProposal(entries=sorted(entries, key=lambda e: e.date))
     return await deps.repo.create_proposal(
         slack_user_id=slack_user_id,

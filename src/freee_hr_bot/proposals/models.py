@@ -30,7 +30,8 @@ class WorkRecordEntry(BaseModel):
     date: date
     clock_in: str
     clock_out: str
-    breaks: list[TimeRange] = []
+    # None = the request did not mention breaks; draft_work_records fills them in.
+    breaks: list[TimeRange] | None = None
     existing: ExistingRecord | None = None
 
 

@@ -2,10 +2,11 @@ from datetime import date
 
 import pytest
 
-from freee_hr_bot.proposals.models import TimeRange, WorkRecordEntry
+from freee_hr_bot.proposals.models import ExistingRecord, TimeRange, WorkRecordEntry
 from freee_hr_bot.proposals.validate import (
     ValidationError,
     from_freee_datetime,
+    resolve_breaks,
     to_freee_datetime,
     to_minutes,
     validate_overtime_range,
@@ -13,6 +14,7 @@ from freee_hr_bot.proposals.validate import (
 )
 
 TODAY = date(2026, 9, 29)
+DEFAULT_BREAK = TimeRange(start="12:00", end="13:00")
 
 
 def entry(d=TODAY, cin="09:00", cout="18:00", breaks=(("12:00", "13:00"),)):
@@ -96,3 +98,48 @@ def test_overtime_range():
         validate_overtime_range("21:00", "18:00")
     with pytest.raises(ValidationError):
         validate_overtime_range("18:00", "25:00")
+
+
+def bare(cin, cout, existing_breaks=()):
+    return WorkRecordEntry(
+        date=TODAY,
+        clock_in=cin,
+        clock_out=cout,
+        existing=ExistingRecord(breaks=[TimeRange(start=s, end=e) for s, e in existing_breaks]),
+    )
+
+
+@pytest.mark.parametrize(
+    "cin,cout,existing,expected",
+    [
+        ("09:00", "18:00", (), [("12:00", "13:00")]),
+        # freee already has breaks: keep them instead of the default
+        ("09:00", "19:00", (("12:30", "13:30"),), [("12:30", "13:30")]),
+        # 6 hours or less: no default break
+        ("09:00", "13:00", (), []),
+        ("11:00", "14:00", (), []),
+        ("12:00", "13:00", (), []),
+        ("09:00", "15:00", (), []),
+        ("09:00", "15:01", (), [("12:00", "13:00")]),
+    ],
+)
+def test_resolve_breaks(cin, cout, existing, expected):
+    got = resolve_breaks(bare(cin, cout, existing), DEFAULT_BREAK)
+    assert [(b.start, b.end) for b in got] == expected
+
+
+def test_resolve_breaks_returns_fresh_instances():
+    assert resolve_breaks(bare("09:00", "18:00"), DEFAULT_BREAK)[0] is not DEFAULT_BREAK
+
+
+@pytest.mark.parametrize(
+    "cin,cout,existing,message",
+    [
+        ("13:00", "22:00", (), "休憩の指定がなく"),
+        ("20:00", "29:00", (), "休憩の指定がなく"),
+        ("14:00", "22:00", (("12:00", "13:00"),), "登録済みの休憩"),
+    ],
+)
+def test_resolve_breaks_asks_when_nothing_fits(cin, cout, existing, message):
+    with pytest.raises(ValidationError, match=message):
+        resolve_breaks(bare(cin, cout, existing), DEFAULT_BREAK)

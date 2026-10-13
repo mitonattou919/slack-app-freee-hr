@@ -7,6 +7,8 @@ from freee_hr_bot.proposals.models import TimeRange, WorkRecordEntry
 
 _HHMM = re.compile(r"^(\d{1,2}):(\d{2})$")
 MAX_SHIFT_MINUTES = 24 * 60
+# Shifts up to this long get no default break (no break is legally required up to 6 hours).
+NO_BREAK_SHIFT_MINUTES = 6 * 60
 
 
 class ValidationError(ValueError):
@@ -57,7 +59,7 @@ def validate_work_entry(entry: WorkRecordEntry, *, today: date) -> None:
         )
     if end - start > MAX_SHIFT_MINUTES:
         raise ValidationError(f"{entry.date}: 勤務時間が24時間を超えています")
-    ranges = sorted((to_minutes(b.start), to_minutes(b.end)) for b in entry.breaks)
+    ranges = sorted((to_minutes(b.start), to_minutes(b.end)) for b in entry.breaks or [])
     prev_end = start
     for b_start, b_end in ranges:
         if b_end <= b_start:
@@ -65,6 +67,32 @@ def validate_work_entry(entry: WorkRecordEntry, *, today: date) -> None:
         if b_start < prev_end or b_end > end:
             raise ValidationError(f"{entry.date}: 休憩が勤務時間外、または休憩同士が重なっています")
         prev_end = b_end
+
+
+def resolve_breaks(entry: WorkRecordEntry, default: TimeRange) -> list[TimeRange]:
+    """Breaks for an entry that did not mention any: keep freee's, else the default."""
+    start, end = to_minutes(entry.clock_in), to_minutes(entry.clock_out)
+
+    def fits(breaks: list[TimeRange]) -> bool:
+        return all(start <= to_minutes(b.start) and to_minutes(b.end) <= end for b in breaks)
+
+    ask = "休憩時間(または休憩なし)をユーザーに確認してください"
+    existing = entry.existing.breaks if entry.existing else []
+    if existing:
+        if not fits(existing):
+            current = "、".join(f"{b.start}〜{b.end}" for b in existing)
+            raise ValidationError(
+                f"{entry.date}: 登録済みの休憩({current})が新しい勤務時間に収まりません。{ask}"
+            )
+        return [b.model_copy() for b in existing]
+    if end - start <= NO_BREAK_SHIFT_MINUTES:
+        return []
+    if not fits([default]):
+        raise ValidationError(
+            f"{entry.date}: 休憩の指定がなく、既定の {default.start}〜{default.end} が"
+            f"勤務時間に収まりません。{ask}"
+        )
+    return [default.model_copy()]
 
 
 def validate_work_entries(entries: list[WorkRecordEntry], *, today: date, max_days: int) -> None:

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 import respx
+from google.adk.tools import FunctionTool
 
 from freee_hr_bot.agent.tools import PROPOSAL_KEY, WorkDayInput, build_tools
 from tests.conftest import API, EMPLOYEE_ID, USER
@@ -88,35 +89,42 @@ def work_day(**kwargs):
     return WorkDayInput(date="2026-09-28", clock_in="09:00", clock_out="18:00", **kwargs)
 
 
-def empty_work_record():
-    return respx.get(f"{API}/employees/{EMPLOYEE_ID}/work_records/2026-09-28").mock(
-        return_value=httpx.Response(200, json={"work_record_segments": [], "is_editable": True})
-    )
-
-
 @respx.mock
 @pytest.mark.parametrize(
     "kwargs,expected",
     [
         ({}, [{"start": "12:00", "end": "13:00"}]),
-        ({"breaks": []}, []),
+        ({"breaks": []}, [{"start": "12:00", "end": "13:00"}]),
+        ({"no_break": True}, []),
         ({"breaks": [{"start": "15:00", "end": "15:30"}]}, [{"start": "15:00", "end": "15:30"}]),
     ],
 )
-async def test_propose_work_records_break_default(tools, ctx, deps, kwargs, expected):
-    empty_work_record()
+async def test_propose_work_records_breaks(tools, ctx, deps, kwargs, expected):
+    respx.get(f"{API}/employees/{EMPLOYEE_ID}/work_records/2026-09-28").mock(
+        return_value=httpx.Response(200, json={"work_record_segments": [], "is_editable": True})
+    )
     res = await tools["propose_work_records"]([work_day(**kwargs)], ctx)
     assert res["status"] == "drafted"
     row = await deps.repo.get_proposal(res[PROPOSAL_KEY])
     assert row.payload["entries"][0]["breaks"] == expected
 
 
-@pytest.mark.parametrize("cin,cout", [("13:00", "22:00"), ("09:00", "12:30"), ("20:00", "29:00")])
-async def test_default_break_outside_shift_asks_user(tools, ctx, cin, cout):
-    day = WorkDayInput(date="2026-09-28", clock_in=cin, clock_out=cout)
+async def test_no_break_with_breaks_is_rejected(tools, ctx):
+    day = work_day(no_break=True, breaks=[{"start": "12:00", "end": "13:00"}])
     res = await tools["propose_work_records"]([day], ctx)
     assert res["status"] == "error"
-    assert "休憩の指定がなく" in res["message"]
+    assert "no_break" in res["message"]
+
+
+def test_work_record_declaration_has_plain_break_fields(tools):
+    """Gemini must receive breaks/no_break as plain (non-nullable) fields."""
+    decl = FunctionTool(tools["propose_work_records"])._get_declaration()
+    schema = decl.model_dump(mode="json", exclude_none=True)
+    day = schema["parameters_json_schema"]["$defs"]["WorkDayInput"]
+    assert day["properties"]["breaks"]["type"] == "array"
+    assert day["properties"]["no_break"]["type"] == "boolean"
+    assert day["required"] == ["date", "clock_in", "clock_out"]
+    assert '"null"' not in json.dumps(schema)
 
 
 @respx.mock

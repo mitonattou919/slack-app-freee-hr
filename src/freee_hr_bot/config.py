@@ -1,8 +1,10 @@
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from freee_hr_bot.proposals.validate import to_minutes
 
 
 class Settings(BaseSettings):
@@ -25,6 +27,15 @@ class Settings(BaseSettings):
     tz: str = "Asia/Tokyo"
     proposal_ttl_minutes: int = 15
     max_work_record_days: int = Field(default=7, ge=1)
+    # Break filled in when a work record request does not mention breaks
+    default_break_start: str = "12:00"
+    default_break_end: str = "13:00"
+
+    @model_validator(mode="after")
+    def _check_default_break(self) -> "Settings":
+        if to_minutes(self.default_break_end) <= to_minutes(self.default_break_start):
+            raise ValueError("DEFAULT_BREAK_END must be after DEFAULT_BREAK_START")
+        return self
 
     @property
     def zone(self) -> ZoneInfo:
