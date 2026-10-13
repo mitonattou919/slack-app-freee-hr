@@ -43,7 +43,8 @@ async def run() -> None:
             ttl=timedelta(minutes=settings.proposal_ttl_minutes),
             max_work_record_days=settings.max_work_record_days,
             default_break=TimeRange(
-                start=settings.default_break_start, end=settings.default_break_end
+                start=f"{settings.default_break_start:%H:%M}",
+                end=f"{settings.default_break_end:%H:%M}",
             ),
         )
 

@@ -4,7 +4,7 @@ Nothing here writes to freee. Writes happen in executor.py after the owner confi
 """
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
@@ -22,6 +22,7 @@ from freee_hr_bot.proposals.models import (
     TimeRange,
     WorkRecordEntry,
     WorkRecordProposal,
+    WorkRecordRequest,
 )
 from freee_hr_bot.proposals.validate import (
     from_freee_datetime,
@@ -41,7 +42,7 @@ class Deps:
     company_id: int
     ttl: timedelta
     max_work_record_days: int
-    default_break: TimeRange = field(default_factory=lambda: TimeRange(start="12:00", end="13:00"))
+    default_break: TimeRange
 
 
 async def hr_for(deps: Deps, slack_user_id: str) -> HRApi:
@@ -90,20 +91,25 @@ async def draft_work_records(
     deps: Deps,
     *,
     slack_user_id: str,
-    entries: list[WorkRecordEntry],
+    requests: list[WorkRecordRequest],
     today: date,
     channel_id: str,
     thread_ts: str,
 ) -> Proposal:
+    entries = [
+        WorkRecordEntry(
+            date=r.date, clock_in=r.clock_in, clock_out=r.clock_out, breaks=r.breaks or []
+        )
+        for r in requests
+    ]
     validate_work_entries(entries, today=today, max_days=deps.max_work_record_days)
     hr = await hr_for(deps, slack_user_id)
     records = await asyncio.gather(*(hr.get_work_record(e.date) for e in entries))
-    for entry, record in zip(entries, records, strict=True):
+    for request, entry, record in zip(requests, entries, records, strict=True):
         entry.existing = parse_existing(entry.date, record)
-        if entry.breaks is None:
-            # Uneditable days are never written, so there is nothing to ask about.
-            editable = entry.existing.is_editable
-            entry.breaks = resolve_breaks(entry, deps.default_break) if editable else []
+        # Uneditable days are never written, so there is nothing to fill in or ask about.
+        if request.breaks is None and entry.existing.is_editable:
+            entry.breaks = resolve_breaks(entry, deps.default_break, today=today)
     proposal = WorkRecordProposal(entries=sorted(entries, key=lambda e: e.date))
     return await deps.repo.create_proposal(
         slack_user_id=slack_user_id,

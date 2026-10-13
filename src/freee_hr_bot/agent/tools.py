@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from freee_hr_bot.freee.client import FreeeAPIError, NotLinkedError
 from freee_hr_bot.proposals import service
-from freee_hr_bot.proposals.models import TimeRange, WorkRecordEntry
+from freee_hr_bot.proposals.models import TimeRange, WorkRecordRequest
 from freee_hr_bot.proposals.service import Deps, hr_for, parse_existing
 from freee_hr_bot.proposals.validate import ValidationError as ProposalValidationError
 
@@ -127,8 +127,8 @@ def build_tools(deps: Deps, today: Callable[[], date]) -> list[Callable[..., Any
         """
         user, channel, thread = where(tool_context)
         try:
-            entries = [
-                WorkRecordEntry(
+            requests = [
+                WorkRecordRequest(
                     date=date.fromisoformat(d.date),
                     clock_in=d.clock_in,
                     clock_out=d.clock_out,
@@ -139,7 +139,7 @@ def build_tools(deps: Deps, today: Callable[[], date]) -> list[Callable[..., Any
             p = await service.draft_work_records(
                 deps,
                 slack_user_id=user,
-                entries=entries,
+                requests=requests,
                 today=today(),
                 channel_id=channel,
                 thread_ts=thread,

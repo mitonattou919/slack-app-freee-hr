@@ -19,12 +19,14 @@ def test_work_card_marks_overwrite_and_locked_days():
                 date=date(2026, 9, 28),
                 clock_in="09:00",
                 clock_out="19:00",
+                breaks=[],
                 existing=ExistingRecord(segments=[TimeRange(start="09:00", end="18:00")]),
             ),
             WorkRecordEntry(
                 date=date(2026, 9, 29),
                 clock_in="09:00",
                 clock_out="19:00",
+                breaks=[],
                 existing=ExistingRecord(is_editable=False),
             ),
         ]
@@ -42,6 +44,7 @@ def test_confirm_hidden_when_nothing_registrable():
                 date=date(2026, 9, 29),
                 clock_in="09:00",
                 clock_out="19:00",
+                breaks=[],
                 existing=ExistingRecord(is_editable=False),
             )
         ]

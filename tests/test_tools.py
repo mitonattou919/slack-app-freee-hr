@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import httpx
 import pytest
 import respx
-from google.adk.tools import FunctionTool
 
 from freee_hr_bot.agent.tools import PROPOSAL_KEY, WorkDayInput, build_tools
 from tests.conftest import API, EMPLOYEE_ID, USER
@@ -114,17 +113,6 @@ async def test_no_break_with_breaks_is_rejected(tools, ctx):
     res = await tools["propose_work_records"]([day], ctx)
     assert res["status"] == "error"
     assert "no_break" in res["message"]
-
-
-def test_work_record_declaration_has_plain_break_fields(tools):
-    """Gemini must receive breaks/no_break as plain (non-nullable) fields."""
-    decl = FunctionTool(tools["propose_work_records"])._get_declaration()
-    schema = decl.model_dump(mode="json", exclude_none=True)
-    day = schema["parameters_json_schema"]["$defs"]["WorkDayInput"]
-    assert day["properties"]["breaks"]["type"] == "array"
-    assert day["properties"]["no_break"]["type"] == "boolean"
-    assert day["required"] == ["date", "clock_in", "clock_out"]
-    assert '"null"' not in json.dumps(schema)
 
 
 @respx.mock

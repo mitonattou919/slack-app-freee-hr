@@ -103,7 +103,11 @@ async def make_proposal(deps, payload: dict, *, ttl: timedelta = timedelta(minut
 
 def work_payload(clock_out: str = "18:00") -> dict:
     return WorkRecordProposal(
-        entries=[WorkRecordEntry(date=date(2026, 9, 29), clock_in="09:00", clock_out=clock_out)]
+        entries=[
+            WorkRecordEntry(
+                date=date(2026, 9, 29), clock_in="09:00", clock_out=clock_out, breaks=[]
+            )
+        ]
     ).model_dump(mode="json")
 
 

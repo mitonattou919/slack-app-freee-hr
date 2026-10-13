@@ -26,12 +26,22 @@ class ExistingRecord(BaseModel):
         return not (self.segments or self.breaks or self.paid_holiday or self.is_absence)
 
 
+class WorkRecordRequest(BaseModel):
+    """What was asked for one day. draft_work_records turns it into a WorkRecordEntry."""
+
+    date: date
+    clock_in: str
+    clock_out: str
+    # None = breaks were not mentioned; [] = explicitly no break.
+    breaks: list[TimeRange] | None = None
+
+
 class WorkRecordEntry(BaseModel):
     date: date
     clock_in: str
     clock_out: str
-    # None = the request did not mention breaks; draft_work_records fills them in.
-    breaks: list[TimeRange] | None = None
+    # Required on purpose: an entry is written to freee as is, so breaks must be decided.
+    breaks: list[TimeRange]
     existing: ExistingRecord | None = None
 
 

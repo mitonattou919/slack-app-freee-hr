@@ -80,7 +80,7 @@ async def execute(deps: Deps, slack_user_id: str, payload: dict[str, Any]) -> Ex
                             "clock_out_at": to_freee_datetime(entry.date, segment.end),
                         }
                     ],
-                    breaks=break_payload(entry.date, entry.breaks or []),
+                    breaks=break_payload(entry.date, entry.breaks),
                 )
             except Exception as e:  # report per day, keep going
                 result.ok = False
