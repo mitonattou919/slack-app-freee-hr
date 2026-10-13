@@ -20,8 +20,11 @@ from freee_hr_bot.proposals import service
 from freee_hr_bot.proposals.models import TimeRange, WorkRecordEntry
 from freee_hr_bot.proposals.service import Deps, hr_for, parse_existing
 from freee_hr_bot.proposals.validate import ValidationError as ProposalValidationError
+from freee_hr_bot.proposals.validate import to_minutes
 
 PROPOSAL_KEY = "proposal_id"
+# Applied when the user says nothing about breaks.
+DEFAULT_BREAK = TimeRange(start="12:00", end="13:00")
 logger = logging.getLogger(__name__)
 
 
@@ -36,7 +39,25 @@ class WorkDayInput(BaseModel):
     clock_out: str = Field(
         description="退勤時刻 HH:MM。日付をまたぐ場合は 25:30 のように24以上で表す"
     )
-    breaks: list[BreakInput] = Field(default=[], description="休憩時間帯のリスト")
+    breaks: list[BreakInput] | None = Field(
+        default=None,
+        description=(
+            "休憩時間帯のリスト。ユーザーが休憩に触れていなければ省略する"
+            "(既定の 12:00〜13:00 になる)。休憩なしと明示された場合だけ空リストにする"
+        ),
+    )
+
+
+def _breaks(d: WorkDayInput) -> list[TimeRange]:
+    if d.breaks is not None:
+        return [TimeRange(start=b.start, end=b.end) for b in d.breaks]
+    lunch_start, lunch_end = to_minutes(DEFAULT_BREAK.start), to_minutes(DEFAULT_BREAK.end)
+    if to_minutes(d.clock_in) > lunch_start or to_minutes(d.clock_out) < lunch_end:
+        raise ProposalValidationError(
+            f"{d.date}: 休憩の指定がなく、既定の {DEFAULT_BREAK.start}〜{DEFAULT_BREAK.end} が"
+            "勤務時間に収まりません。休憩時間(または休憩なし)をユーザーに確認してください"
+        )
+    return [DEFAULT_BREAK]
 
 
 def _error(e: Exception) -> dict[str, Any]:
@@ -114,7 +135,7 @@ def build_tools(deps: Deps, today: Callable[[], date]) -> list[Callable[..., Any
                     date=date.fromisoformat(d.date),
                     clock_in=d.clock_in,
                     clock_out=d.clock_out,
-                    breaks=[TimeRange(start=b.start, end=b.end) for b in d.breaks],
+                    breaks=_breaks(d),
                 )
                 for d in days
             ]

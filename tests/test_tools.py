@@ -8,7 +8,7 @@ import httpx
 import pytest
 import respx
 
-from freee_hr_bot.agent.tools import PROPOSAL_KEY, build_tools
+from freee_hr_bot.agent.tools import PROPOSAL_KEY, WorkDayInput, build_tools
 from tests.conftest import API, EMPLOYEE_ID, USER
 
 TODAY = date(2026, 9, 29)
@@ -82,6 +82,41 @@ async def test_freee_timeout_is_reported_as_timeout(tools, ctx):
     res = await tools["get_work_records"](["2026-09-28"], ctx)
     assert res["status"] == "error"
     assert "タイムアウト" in res["message"]
+
+
+def work_day(**kwargs):
+    return WorkDayInput(date="2026-09-28", clock_in="09:00", clock_out="18:00", **kwargs)
+
+
+def empty_work_record():
+    return respx.get(f"{API}/employees/{EMPLOYEE_ID}/work_records/2026-09-28").mock(
+        return_value=httpx.Response(200, json={"work_record_segments": [], "is_editable": True})
+    )
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "kwargs,expected",
+    [
+        ({}, [{"start": "12:00", "end": "13:00"}]),
+        ({"breaks": []}, []),
+        ({"breaks": [{"start": "15:00", "end": "15:30"}]}, [{"start": "15:00", "end": "15:30"}]),
+    ],
+)
+async def test_propose_work_records_break_default(tools, ctx, deps, kwargs, expected):
+    empty_work_record()
+    res = await tools["propose_work_records"]([work_day(**kwargs)], ctx)
+    assert res["status"] == "drafted"
+    row = await deps.repo.get_proposal(res[PROPOSAL_KEY])
+    assert row.payload["entries"][0]["breaks"] == expected
+
+
+@pytest.mark.parametrize("cin,cout", [("13:00", "22:00"), ("09:00", "12:30"), ("20:00", "29:00")])
+async def test_default_break_outside_shift_asks_user(tools, ctx, cin, cout):
+    day = WorkDayInput(date="2026-09-28", clock_in=cin, clock_out=cout)
+    res = await tools["propose_work_records"]([day], ctx)
+    assert res["status"] == "error"
+    assert "休憩の指定がなく" in res["message"]
 
 
 @respx.mock
