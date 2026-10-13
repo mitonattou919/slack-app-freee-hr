@@ -16,6 +16,7 @@ from freee_hr_bot.crypto import TokenCipher
 from freee_hr_bot.db.repo import Repository
 from freee_hr_bot.freee.client import TokenProvider
 from freee_hr_bot.freee.oauth import FreeeOAuth
+from freee_hr_bot.proposals.models import TimeRange
 from freee_hr_bot.proposals.service import Deps
 from freee_hr_bot.slack.handlers import register
 
@@ -41,6 +42,10 @@ async def run() -> None:
             company_id=settings.freee_company_id,
             ttl=timedelta(minutes=settings.proposal_ttl_minutes),
             max_work_record_days=settings.max_work_record_days,
+            default_break=TimeRange(
+                start=f"{settings.default_break_start:%H:%M}",
+                end=f"{settings.default_break_end:%H:%M}",
+            ),
         )
 
         def today() -> date:

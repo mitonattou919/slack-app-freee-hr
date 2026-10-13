@@ -7,6 +7,8 @@ from freee_hr_bot.proposals.models import TimeRange, WorkRecordEntry
 
 _HHMM = re.compile(r"^(\d{1,2}):(\d{2})$")
 MAX_SHIFT_MINUTES = 24 * 60
+# Shifts up to this long get no default break (no break is legally required up to 6 hours).
+NO_BREAK_SHIFT_MINUTES = 6 * 60
 
 
 class ValidationError(ValueError):
@@ -65,6 +67,27 @@ def validate_work_entry(entry: WorkRecordEntry, *, today: date) -> None:
         if b_start < prev_end or b_end > end:
             raise ValidationError(f"{entry.date}: 休憩が勤務時間外、または休憩同士が重なっています")
         prev_end = b_end
+
+
+def resolve_breaks(entry: WorkRecordEntry, default: TimeRange, *, today: date) -> list[TimeRange]:
+    """Breaks for an entry whose request did not mention any.
+
+    Short shifts get none; otherwise keep what freee already has, else use the default.
+    """
+    if to_minutes(entry.clock_out) - to_minutes(entry.clock_in) <= NO_BREAK_SHIFT_MINUTES:
+        return []
+    existing = entry.existing.breaks if entry.existing else []
+    source = "登録済みの休憩" if existing else "既定の休憩"
+    breaks = [b.model_copy() for b in existing or [default]]
+    try:
+        validate_work_entry(entry.model_copy(update={"breaks": breaks}), today=today)
+    except ValidationError as e:
+        ranges = "、".join(f"{b.start}〜{b.end}" for b in breaks)
+        raise ValidationError(
+            f"{entry.date}: 休憩の指定がなく、{source}({ranges})は新しい勤務時間に"
+            "そのまま使えません。休憩時間(または休憩なし)をユーザーに確認してください"
+        ) from e
+    return breaks
 
 
 def validate_work_entries(entries: list[WorkRecordEntry], *, today: date, max_days: int) -> None:

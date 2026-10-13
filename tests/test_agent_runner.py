@@ -23,12 +23,18 @@ class ScriptedLlm(BaseLlm):
     tool_name: str
     tool_args: dict
     seen_instruction: str = ""
+    seen_declarations: dict[str, str] = {}
     seen_tool_result: dict | None = None
 
     async def generate_content_async(
         self, llm_request: LlmRequest, stream: bool = False
     ) -> AsyncGenerator[LlmResponse, None]:
         self.seen_instruction = str(llm_request.config.system_instruction)
+        self.seen_declarations = {
+            d.name: d.model_dump_json(exclude_none=True)
+            for tool in llm_request.config.tools or []
+            for d in tool.function_declarations or []
+        }
         last = llm_request.contents[-1]
         results = [p.function_response for p in last.parts if p.function_response]
         if results:
@@ -83,6 +89,11 @@ async def test_proposal_tool_flows_back_to_slack_layer(deps):
         "pending",
     )
     assert "2026-09-29(火)" in llm.seen_instruction
+    # breaks/no_break reach the model as plain fields, whichever schema format ADK emits
+    declaration = llm.seen_declarations["propose_work_records"]
+    assert '"breaks"' in declaration and '"no_break"' in declaration
+    for nullable_marker in ('"null"', '"nullable":true', '"NULL"'):
+        assert nullable_marker not in declaration
     # nothing was written to freee
     assert not any(c.request.method == "PUT" for c in respx.calls)
 

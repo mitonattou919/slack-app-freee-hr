@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from freee_hr_bot.freee.client import FreeeAPIError, NotLinkedError
 from freee_hr_bot.proposals import service
-from freee_hr_bot.proposals.models import TimeRange, WorkRecordEntry
+from freee_hr_bot.proposals.models import TimeRange, WorkRecordRequest
 from freee_hr_bot.proposals.service import Deps, hr_for, parse_existing
 from freee_hr_bot.proposals.validate import ValidationError as ProposalValidationError
 
@@ -36,7 +36,25 @@ class WorkDayInput(BaseModel):
     clock_out: str = Field(
         description="退勤時刻 HH:MM。日付をまたぐ場合は 25:30 のように24以上で表す"
     )
-    breaks: list[BreakInput] = Field(default=[], description="休憩時間帯のリスト")
+    breaks: list[BreakInput] = Field(
+        default=[],
+        description=(
+            "ユーザーが明示した休憩時間帯のリスト。休憩に触れていなければ空のままにする"
+            "(登録済みの休憩か既定の休憩が自動で入る)"
+        ),
+    )
+    no_break: bool = Field(
+        default=False, description="ユーザーが「休憩なし」と明示した場合だけ true にする"
+    )
+
+
+def _breaks(d: WorkDayInput) -> list[TimeRange] | None:
+    """None means "not mentioned", which draft_work_records fills in."""
+    if d.no_break:
+        if d.breaks:
+            raise ValueError(f"{d.date}: no_break と breaks は同時に指定できません")
+        return []
+    return [TimeRange(start=b.start, end=b.end) for b in d.breaks] or None
 
 
 def _error(e: Exception) -> dict[str, Any]:
@@ -109,19 +127,19 @@ def build_tools(deps: Deps, today: Callable[[], date]) -> list[Callable[..., Any
         """
         user, channel, thread = where(tool_context)
         try:
-            entries = [
-                WorkRecordEntry(
+            requests = [
+                WorkRecordRequest(
                     date=date.fromisoformat(d.date),
                     clock_in=d.clock_in,
                     clock_out=d.clock_out,
-                    breaks=[TimeRange(start=b.start, end=b.end) for b in d.breaks],
+                    breaks=_breaks(d),
                 )
                 for d in days
             ]
             p = await service.draft_work_records(
                 deps,
                 slack_user_id=user,
-                entries=entries,
+                requests=requests,
                 today=today(),
                 channel_id=channel,
                 thread_ts=thread,

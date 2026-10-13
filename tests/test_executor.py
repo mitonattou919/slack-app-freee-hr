@@ -85,10 +85,11 @@ async def test_work_records_partial_failure_and_locked_day(deps):
                 date=date(2026, 9, 27),
                 clock_in="09:00",
                 clock_out="18:00",
+                breaks=[],
                 existing=ExistingRecord(is_editable=False),
             ),
-            WorkRecordEntry(date=date(2026, 9, 28), clock_in="09:00", clock_out="18:00"),
-            WorkRecordEntry(date=D, clock_in="09:00", clock_out="18:00"),
+            WorkRecordEntry(date=date(2026, 9, 28), clock_in="09:00", clock_out="18:00", breaks=[]),
+            WorkRecordEntry(date=D, clock_in="09:00", clock_out="18:00", breaks=[]),
         ),
     )
     assert not result.ok

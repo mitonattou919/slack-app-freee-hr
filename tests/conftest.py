@@ -9,6 +9,7 @@ from freee_hr_bot.db.models import UserLink
 from freee_hr_bot.db.repo import Repository, utcnow
 from freee_hr_bot.freee.client import TokenProvider
 from freee_hr_bot.freee.oauth import FreeeOAuth, TokenSet
+from freee_hr_bot.proposals.models import TimeRange
 from freee_hr_bot.proposals.service import Deps
 
 COMPANY_ID = 1
@@ -69,4 +70,5 @@ async def deps(repo, tokens, http):
         company_id=COMPANY_ID,
         ttl=timedelta(minutes=15),
         max_work_record_days=7,
+        default_break=TimeRange(start="12:00", end="13:00"),
     )

@@ -5,7 +5,7 @@ import pytest
 import respx
 
 from freee_hr_bot.proposals import service
-from freee_hr_bot.proposals.models import TimeRange, WorkRecordEntry, load_proposal
+from freee_hr_bot.proposals.models import TimeRange, WorkRecordRequest, load_proposal
 from freee_hr_bot.proposals.validate import ValidationError
 from tests.conftest import API, EMPLOYEE_ID, USER
 
@@ -44,9 +44,9 @@ async def test_draft_work_records_captures_existing_state(deps):
             },
         )
     )
-    entries = [
-        WorkRecordEntry(date=date(2026, 9, 29), clock_in="09:00", clock_out="19:00"),
-        WorkRecordEntry(
+    requests = [
+        WorkRecordRequest(date=date(2026, 9, 29), clock_in="09:00", clock_out="19:00"),
+        WorkRecordRequest(
             date=date(2026, 9, 28),
             clock_in="09:00",
             clock_out="19:00",
@@ -54,7 +54,7 @@ async def test_draft_work_records_captures_existing_state(deps):
         ),
     ]
     row = await service.draft_work_records(
-        deps, slack_user_id=USER, entries=entries, today=TODAY, channel_id="D1", thread_ts="1.0"
+        deps, slack_user_id=USER, requests=requests, today=TODAY, channel_id="D1", thread_ts="1.0"
     )
     p = load_proposal(row.payload)
     assert [e.date for e in p.entries] == [date(2026, 9, 28), date(2026, 9, 29)]  # sorted
@@ -72,8 +72,80 @@ async def test_draft_work_records_validates_before_calling_freee(deps):
             today=TODAY,
             channel_id="D1",
             thread_ts="1.0",
-            entries=[WorkRecordEntry(date=date(2026, 10, 1), clock_in="09:00", clock_out="18:00")],
+            requests=[
+                WorkRecordRequest(date=date(2026, 10, 1), clock_in="09:00", clock_out="18:00")
+            ],
         )
+
+
+async def draft(deps, day, cin, cout):
+    requests = [WorkRecordRequest(date=date.fromisoformat(day), clock_in=cin, clock_out=cout)]
+    row = await service.draft_work_records(
+        deps, slack_user_id=USER, requests=requests, today=TODAY, channel_id="D1", thread_ts="1.0"
+    )
+    return load_proposal(row.payload).entries[0]
+
+
+@respx.mock
+async def test_unspecified_breaks_keep_what_freee_has(deps):
+    respx.get(wr_url("2026-09-28")).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "break_records": [
+                    {
+                        "clock_in_at": "2026-09-28T12:30:00.000+09:00",
+                        "clock_out_at": "2026-09-28T13:30:00.000+09:00",
+                    }
+                ],
+                "is_editable": True,
+            },
+        )
+    )
+    e = await draft(deps, "2026-09-28", "09:00", "19:00")
+    assert e.breaks == [TimeRange(start="12:30", end="13:30")]
+
+
+@respx.mock
+async def test_overlapping_breaks_from_freee_are_not_carried_over(deps):
+    def br(start, end):
+        return {
+            "clock_in_at": f"2026-09-28T{start}:00.000+09:00",
+            "clock_out_at": f"2026-09-28T{end}:00.000+09:00",
+        }
+
+    respx.get(wr_url("2026-09-28")).mock(
+        return_value=httpx.Response(
+            200, json={"break_records": [br("12:00", "13:00"), br("12:30", "13:30")]}
+        )
+    )
+    with pytest.raises(ValidationError, match="登録済みの休憩"):
+        await draft(deps, "2026-09-28", "09:00", "19:00")
+
+
+@respx.mock
+async def test_unspecified_breaks_use_configured_default(deps):
+    respx.get(wr_url("2026-09-28")).mock(return_value=httpx.Response(200, json={}))
+    deps.default_break = TimeRange(start="12:30", end="13:15")
+    e = await draft(deps, "2026-09-28", "09:00", "18:00")
+    assert e.breaks == [TimeRange(start="12:30", end="13:15")]
+
+
+@respx.mock
+async def test_uneditable_day_does_not_ask_about_breaks(deps):
+    respx.get(wr_url("2026-09-28")).mock(
+        return_value=httpx.Response(200, json={"is_editable": False})
+    )
+    e = await draft(deps, "2026-09-28", "13:00", "22:00")
+    assert e.breaks == []
+
+
+async def test_other_errors_come_before_the_break_question(deps):
+    # 13:00-22:00 would trigger the break question, but the date/order errors must win.
+    with pytest.raises(ValidationError, match="未来"):
+        await draft(deps, "2026-10-01", "13:00", "22:00")
+    with pytest.raises(ValidationError, match="退勤"):
+        await draft(deps, "2026-09-28", "22:00", "13:00")
 
 
 @respx.mock

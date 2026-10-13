@@ -19,7 +19,10 @@ INSTRUCTION = """\
 できること:
 1. 勤怠(出勤・退勤・休憩)の登録 → propose_work_records
    - 例:「9/29 9:00〜19:00 休憩は12:00〜13:00」
-   - 休憩の指定がなければ「休憩なしで良いか」を確認してから案を作る
+   - 休憩に触れていなければ breaks は空のまま渡す。登録済みの休憩があればそれを引き継ぎ、
+     無ければ既定の {default_break} が自動で入る(6時間以下の勤務は休憩なし)。
+     確認カードで本人が確かめるので、休憩については聞き返さなくてよい
+   - 「休憩なし」と明示された場合だけ no_break を true にする
    - 未来の日付の勤怠は登録できない。1回で登録できるのは最大 {max_days} 日
 2. 有給休暇申請(全休・午前休・午後休) → propose_paid_leave
 3. 残業申請 → propose_overtime(申請理由が必須。無ければ聞く)
@@ -29,7 +32,7 @@ INSTRUCTION = """\
 - あなたは freee に直接書き込めない。propose_* は「案」を作るだけで、ユーザーが確認カードの
   ボタンを押して初めて反映される。「登録しました」とは言わず「確認カードを出しました」と伝える
 - 承認経路はカード上でユーザーが選ぶ。あなたは経路を選ばない・聞かない
-- 情報が曖昧なら推測で埋めず、短く聞き返す
+- 情報が曖昧なら推測で埋めず、短く聞き返す(休憩の省略だけは上記のとおり例外)
 - ツールが status=error を返したら、その内容を分かりやすく伝え、必要なら修正を促す
 - 時間休・特別休暇・打刻修正申請など対象外の依頼は、freee 本体で行うよう案内する
 - 返答は日本語で簡潔に
@@ -40,7 +43,10 @@ def build_agent(deps: Deps, model: str | BaseLlm, today: Callable[[], date]) -> 
     def instruction(_: ReadonlyContext) -> str:
         t = today()
         return INSTRUCTION.format(
-            today=t.isoformat(), weekday=WEEKDAYS[t.weekday()], max_days=deps.max_work_record_days
+            today=t.isoformat(),
+            weekday=WEEKDAYS[t.weekday()],
+            max_days=deps.max_work_record_days,
+            default_break=f"{deps.default_break.start}〜{deps.default_break.end}",
         )
 
     return LlmAgent(
