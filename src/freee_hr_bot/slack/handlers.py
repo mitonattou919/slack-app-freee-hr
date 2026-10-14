@@ -1,8 +1,9 @@
 import asyncio
 import json
 import logging
-from collections import Counter, defaultdict
-from collections.abc import Awaitable, Callable, Sequence
+from collections import Counter, OrderedDict
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import asynccontextmanager
 from datetime import date
 from typing import Any
 
@@ -30,6 +31,7 @@ R_WORKING = "eyes"
 R_DONE = "white_check_mark"
 R_FAILED = "x"
 STATUS_REACTIONS = (R_WORKING, R_DONE, R_FAILED)
+MAX_TRACKED_THREADS = 1000
 
 
 def thread_reaction(
@@ -55,7 +57,10 @@ def thread_reaction(
 
 
 async def set_reaction(client: Any, channel: str, ts: str, name: str, stale: Sequence[str]) -> bool:
-    """Add `name` and remove the `stale` status reactions. Never raises: it is only a hint."""
+    """Add `name` and remove the `stale` status reactions; False if any call failed.
+
+    Never raises: the reaction is only a hint.
+    """
 
     async def call(method: Any, reaction: str) -> bool:
         try:
@@ -71,8 +76,7 @@ async def set_reaction(client: Any, channel: str, ts: str, name: str, stale: Seq
 
     if not await call(client.reactions_add, name):
         return False
-    await asyncio.gather(*(call(client.reactions_remove, r) for r in stale))
-    return True
+    return all(await asyncio.gather(*(call(client.reactions_remove, r) for r in stale)))
 
 
 Sweep = Callable[..., Awaitable[None]]
@@ -84,8 +88,22 @@ def register(app: AsyncApp, *, deps: Deps, oauth: FreeeOAuth, agent: AgentRunner
     # Reaction state per thread (channel, thread_ts). In memory only: after a restart nothing is
     # running, and an unknown `shown` just costs two extra remove calls on the next change.
     running: Counter[tuple[str, str]] = Counter()
-    shown: dict[tuple[str, str], str] = {}
-    reaction_locks: defaultdict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
+    shown: OrderedDict[tuple[str, str], str] = OrderedDict()  # least recently set first
+    reaction_locks: dict[tuple[str, str], asyncio.Lock] = {}
+    lock_users: Counter[tuple[str, str]] = Counter()
+
+    @asynccontextmanager
+    async def reaction_lock(key: tuple[str, str]) -> AsyncIterator[None]:
+        """Per-thread lock that is dropped once nobody holds or waits for it."""
+        lock_users[key] += 1
+        try:
+            async with reaction_locks.setdefault(key, asyncio.Lock()):
+                yield
+        finally:
+            lock_users[key] -= 1
+            if not lock_users[key]:
+                del lock_users[key]
+                del reaction_locks[key]
 
     async def post_card(client, proposal_id: str) -> None:
         row = await deps.repo.get_proposal(proposal_id)
@@ -103,7 +121,7 @@ def register(app: AsyncApp, *, deps: Deps, oauth: FreeeOAuth, agent: AgentRunner
         """Recompute the thread's status and show it. `fresh`: the root message has just arrived."""
         key = (channel, thread_ts)
         # Compute and apply under one lock, so overlapping handlers cannot apply a stale status last.
-        async with reaction_locks[key]:
+        async with reaction_lock(key):
             try:
                 rows = await deps.repo.list_thread_proposals(channel, thread_ts)
             except Exception:
@@ -119,6 +137,12 @@ def register(app: AsyncApp, *, deps: Deps, oauth: FreeeOAuth, agent: AgentRunner
                 stale = [] if fresh else [r for r in STATUS_REACTIONS if r != name]
             if await set_reaction(client, channel, thread_ts, name, stale):
                 shown[key] = name
+                shown.move_to_end(key)
+                while len(shown) > MAX_TRACKED_THREADS:
+                    shown.popitem(last=False)
+            else:
+                # Something may be left over: forget what is shown so the next change clears all.
+                shown.pop(key, None)
 
     async def sweep(client, *, recover: bool = False) -> None:
         """Close expired cards. `recover` (startup only) also fails proposals left executing."""

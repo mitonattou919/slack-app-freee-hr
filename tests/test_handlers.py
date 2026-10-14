@@ -699,6 +699,40 @@ async def test_overlapping_refreshes_end_on_the_latest_status(app, deps, slack):
     assert applied[-1] == "x"
 
 
+async def test_failed_removal_is_retried_on_the_next_change(app, deps, slack):
+    first = await make_proposal(deps, work_payload())
+    second = await make_proposal(deps, work_payload())
+    cancel = listener(app, "action", B.A_CANCEL)
+    await cancel(ack=AsyncMock(), body=action_body(first.id), client=slack)  # shows eyes
+    slack.reactions_remove.reset_mock()
+    slack.reactions_remove.side_effect = SlackApiError("nope", {"error": "ratelimited"})
+    await cancel(ack=AsyncMock(), body=action_body(second.id), client=slack)  # x, eyes left over
+    assert removed(slack) == {"eyes"}
+
+    slack.reactions_remove.reset_mock()
+    slack.reactions_remove.side_effect = None
+    # The status is still x, but the leftover must be cleared on the next refresh.
+    await listener(app, "event", "message")(
+        event=dm_event("どうなった?", ts="150.0", thread_ts=THREAD), client=slack, say=AsyncMock()
+    )
+    assert "eyes" in removed(slack)
+    assert added(slack)[-1] == "x"
+
+
+async def test_tracked_threads_are_bounded(app, slack, monkeypatch):
+    monkeypatch.setattr("freee_hr_bot.slack.handlers.MAX_TRACKED_THREADS", 1)
+    on_message = listener(app, "event", "message")
+    await on_message(event=dm_event("a", ts="1.0"), client=slack, say=AsyncMock())
+    await on_message(event=dm_event("b", ts="2.0"), client=slack, say=AsyncMock())
+    slack.reactions_remove.reset_mock()
+    # Thread 1.0 was evicted, so its shown reaction is unknown again: both others are removed.
+    await on_message(event=dm_event("a2", ts="3.0", thread_ts="1.0"), client=slack, say=AsyncMock())
+    assert [c.kwargs["name"] for c in slack.reactions_remove.call_args_list][:2] == [
+        "white_check_mark",
+        "x",
+    ]
+
+
 # --- sweep --------------------------------------------------------------------------
 async def test_sweep_expires_unclicked_card(app, deps, slack):
     row = await make_proposal(deps, work_payload(), ttl=timedelta(seconds=-1))
