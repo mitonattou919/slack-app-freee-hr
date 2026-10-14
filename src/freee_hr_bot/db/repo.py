@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import CursorResult, select, update
+from sqlalchemy import ColumnElement, Connection, CursorResult, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from freee_hr_bot.db.models import Base, Proposal, UserLink, UserPreference
@@ -27,8 +27,15 @@ class Repository:
         return cls(create_async_engine(url))
 
     async def create_all(self) -> None:
+        def create(conn: Connection) -> None:
+            Base.metadata.create_all(conn)
+            # create_all skips indexes that were added to a table which already exists.
+            for table in Base.metadata.tables.values():
+                for index in table.indexes:
+                    index.create(conn, checkfirst=True)
+
         async with self.engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(create)
 
     # --- user links -------------------------------------------------------
     async def get_link(self, slack_user_id: str) -> UserLink | None:
@@ -85,18 +92,21 @@ class Repository:
                 p.created_at = _aware(p.created_at)
             return p
 
-    async def list_thread_proposals(self, channel_id: str, thread_ts: str) -> list[Proposal]:
+    async def _list_proposals(self, *where: ColumnElement[bool]) -> list[Proposal]:
         async with self._sessions() as s:
-            rows = await s.scalars(
-                select(Proposal).where(
-                    Proposal.channel_id == channel_id, Proposal.thread_ts == thread_ts
-                )
-            )
-            proposals = list(rows)
+            proposals = list(await s.scalars(select(Proposal).where(*where)))
         for p in proposals:
             p.expires_at = _aware(p.expires_at)
             p.created_at = _aware(p.created_at)
         return proposals
+
+    async def list_thread_proposals(self, channel_id: str, thread_ts: str) -> list[Proposal]:
+        return await self._list_proposals(
+            Proposal.channel_id == channel_id, Proposal.thread_ts == thread_ts
+        )
+
+    async def list_proposals_by_status(self, status: str) -> list[Proposal]:
+        return await self._list_proposals(Proposal.status == status)
 
     async def update_proposal(self, proposal_id: str, **values: Any) -> None:
         async with self._sessions() as s, s.begin():

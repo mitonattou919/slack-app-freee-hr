@@ -20,6 +20,10 @@ from freee_hr_bot.proposals.models import TimeRange
 from freee_hr_bot.proposals.service import Deps
 from freee_hr_bot.slack.handlers import register
 
+logger = logging.getLogger(__name__)
+
+SWEEP_INTERVAL_SECONDS = 60
+
 
 async def run() -> None:
     settings = get_settings()
@@ -56,9 +60,24 @@ async def run() -> None:
             DatabaseSessionService(db_url=settings.db_url),
         )
         app = AsyncApp(token=settings.slack_bot_token)
-        register(app, deps=deps, oauth=oauth, agent=agent)
+        sweep = register(app, deps=deps, oauth=oauth, agent=agent)
+
+        async def sweep_forever() -> None:
+            while True:
+                await asyncio.sleep(SWEEP_INTERVAL_SECONDS)
+                try:
+                    await sweep(app.client)
+                except Exception:
+                    logger.exception("sweep failed")
+
+        # Before any event arrives: whatever is still executing was cut off by the last shutdown.
+        await sweep(app.client, recover=True)
+        sweeper = asyncio.create_task(sweep_forever())
         handler = AsyncSocketModeHandler(app, settings.slack_app_token)
-        await handler.start_async()  # type: ignore[no-untyped-call]
+        try:
+            await handler.start_async()  # type: ignore[no-untyped-call]
+        finally:
+            sweeper.cancel()
 
 
 def main() -> None:

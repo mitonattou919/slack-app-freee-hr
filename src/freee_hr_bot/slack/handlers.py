@@ -1,7 +1,8 @@
 import asyncio
 import json
 import logging
-from collections.abc import Sequence
+from collections import Counter, defaultdict
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import date
 from typing import Any
 
@@ -31,42 +32,60 @@ R_FAILED = "x"
 STATUS_REACTIONS = (R_WORKING, R_DONE, R_FAILED)
 
 
-def thread_reaction(proposals: Sequence[Proposal], *, failed: bool = False) -> str:
-    """Working while any card is still open; done only if nothing failed, was cancelled or expired.
+def thread_reaction(
+    proposals: Sequence[Proposal], *, busy: bool = False, failed: bool = False
+) -> str:
+    """Working while a turn is running or a card is open; done only if every proposal succeeded.
 
-    A pending card past its TTL counts as expired even if nobody clicked it yet.
+    A card is open only while its owner can still act on it: posted, pending and within its TTL.
+    A proposal that never got a card, or that failed, was cancelled or expired, counts as failed.
     """
     now = utcnow()
-    if any(
-        p.status == "executing" or (p.status == "pending" and p.expires_at >= now)
-        for p in proposals
-    ):
+
+    def is_open(p: Proposal) -> bool:
+        if p.status == "pending":
+            return p.message_ts is not None and p.expires_at >= now
+        return p.status == "executing"
+
+    if busy or any(is_open(p) for p in proposals):
         return R_WORKING
     if failed or any(p.status != "done" for p in proposals):
         return R_FAILED
     return R_DONE
 
 
-async def set_reaction(client: Any, channel: str, ts: str, name: str) -> None:
-    """Make `name` the only status reaction on the message. Never raises: it is only a hint."""
+async def set_reaction(client: Any, channel: str, ts: str, name: str, stale: Sequence[str]) -> bool:
+    """Add `name` and remove the `stale` status reactions. Never raises: it is only a hint."""
 
-    async def call(method: Any, reaction: str) -> None:
+    async def call(method: Any, reaction: str) -> bool:
         try:
             await method(channel=channel, timestamp=ts, name=reaction)
         except SlackApiError as e:
             if e.response.get("error") not in ("already_reacted", "no_reaction"):
                 logger.warning("reaction %s failed: %s", reaction, e.response.get("error"))
+                return False
         except Exception:
             logger.warning("reaction %s failed", reaction, exc_info=True)
+            return False
+        return True
 
-    await asyncio.gather(
-        call(client.reactions_add, name),
-        *(call(client.reactions_remove, r) for r in STATUS_REACTIONS if r != name),
-    )
+    if not await call(client.reactions_add, name):
+        return False
+    await asyncio.gather(*(call(client.reactions_remove, r) for r in stale))
+    return True
 
 
-def register(app: AsyncApp, *, deps: Deps, oauth: FreeeOAuth, agent: AgentRunner) -> None:
+Sweep = Callable[..., Awaitable[None]]
+
+
+def register(app: AsyncApp, *, deps: Deps, oauth: FreeeOAuth, agent: AgentRunner) -> Sweep:
+    """Register the listeners. Returns the sweep that closes cards nobody will act on any more."""
     ttl_minutes = int(deps.ttl.total_seconds() // 60)
+    # Reaction state per thread (channel, thread_ts). In memory only: after a restart nothing is
+    # running, and an unknown `shown` just costs two extra remove calls on the next change.
+    running: Counter[tuple[str, str]] = Counter()
+    shown: dict[tuple[str, str], str] = {}
+    reaction_locks: defaultdict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def post_card(client, proposal_id: str) -> None:
         row = await deps.repo.get_proposal(proposal_id)
@@ -79,14 +98,61 @@ def register(app: AsyncApp, *, deps: Deps, oauth: FreeeOAuth, agent: AgentRunner
         await deps.repo.update_proposal(row.id, message_ts=res["ts"])
 
     async def refresh_reaction(
-        client, channel: str, thread_ts: str, *, failed: bool = False
+        client, channel: str, thread_ts: str, *, failed: bool = False, fresh: bool = False
     ) -> None:
-        try:
-            rows = await deps.repo.list_thread_proposals(channel, thread_ts)
-        except Exception:
-            logger.warning("could not load proposals for reaction", exc_info=True)
-            return
-        await set_reaction(client, channel, thread_ts, thread_reaction(rows, failed=failed))
+        """Recompute the thread's status and show it. `fresh`: the root message has just arrived."""
+        key = (channel, thread_ts)
+        # Compute and apply under one lock, so overlapping handlers cannot apply a stale status last.
+        async with reaction_locks[key]:
+            try:
+                rows = await deps.repo.list_thread_proposals(channel, thread_ts)
+            except Exception:
+                logger.warning("could not load proposals for reaction", exc_info=True)
+                return
+            name = thread_reaction(rows, busy=running[key] > 0, failed=failed)
+            previous = shown.get(key)
+            if previous == name:
+                return
+            if previous:
+                stale = [previous]
+            else:
+                stale = [] if fresh else [r for r in STATUS_REACTIONS if r != name]
+            if await set_reaction(client, channel, thread_ts, name, stale):
+                shown[key] = name
+
+    async def sweep(client, *, recover: bool = False) -> None:
+        """Close expired cards. `recover` (startup only) also fails proposals left executing."""
+        now = utcnow()
+        stale = [
+            (row, "expired", "⌛ 有効期限切れ")
+            for row in await deps.repo.list_proposals_by_status("pending")
+            if row.expires_at < now
+        ]
+        if recover:
+            # A single instance runs, so nothing can still be executing when the process starts.
+            stale += [
+                (
+                    row,
+                    "failed",
+                    "⚠️ 再起動で処理が中断されました。freee で登録状況を確認してください",
+                )
+                for row in await deps.repo.list_proposals_by_status("executing")
+            ]
+        for row, status, line in stale:
+            if not await deps.repo.transition(row.id, row.status, status):
+                continue
+            if row.message_ts:
+                card = B.proposal_card(row.id, load_proposal(row.payload), ttl_minutes)
+                try:
+                    await client.chat_update(
+                        channel=row.channel_id,
+                        ts=row.message_ts,
+                        blocks=B.finished_card(card, [line]),
+                        text=line,
+                    )
+                except Exception:
+                    logger.warning("could not close card %s", row.id, exc_info=True)
+            await refresh_reaction(client, row.channel_id, row.thread_ts)
 
     # --- DM conversation ---------------------------------------------------
     @app.event("message")
@@ -96,6 +162,7 @@ def register(app: AsyncApp, *, deps: Deps, oauth: FreeeOAuth, agent: AgentRunner
         user = event["user"]
         channel = event["channel"]
         thread_ts = event.get("thread_ts") or event["ts"]
+        fresh = "thread_ts" not in event
         text = (event.get("text") or "").strip()
 
         if text in UNLINK_WORDS:
@@ -104,31 +171,43 @@ def register(app: AsyncApp, *, deps: Deps, oauth: FreeeOAuth, agent: AgentRunner
                 text="freee との連携を解除しました。" if removed else "連携されていません。",
                 thread_ts=thread_ts,
             )
-            await refresh_reaction(client, channel, thread_ts)
+            await refresh_reaction(client, channel, thread_ts, fresh=fresh)
             return
         if await deps.repo.get_link(user) is None:
             await say(blocks=B.link_prompt(), text="freee と連携してください", thread_ts=thread_ts)
-            await refresh_reaction(client, channel, thread_ts)
+            await refresh_reaction(client, channel, thread_ts, fresh=fresh)
             return
 
-        await set_reaction(client, channel, thread_ts, R_WORKING)
+        key = (channel, thread_ts)
+        running[key] += 1
+        # Acknowledge in the background so the reaction does not hold up the agent.
+        acknowledged = asyncio.create_task(
+            refresh_reaction(client, channel, thread_ts, fresh=fresh)
+        )
+        failed = True
         try:
-            turn = await agent.run_turn(
-                user_id=user, channel_id=channel, thread_ts=thread_ts, text=text
-            )
-        except Exception:
-            logger.exception("agent turn failed")
-            await say(
-                text="すみません、処理中にエラーが発生しました。もう一度お試しください。",
-                thread_ts=thread_ts,
-            )
-            await refresh_reaction(client, channel, thread_ts, failed=True)
-            return
-        if turn.text:
-            await say(text=turn.text, thread_ts=thread_ts)
-        for pid in turn.proposal_ids:
-            await post_card(client, pid)
-        await refresh_reaction(client, channel, thread_ts)
+            try:
+                turn = await agent.run_turn(
+                    user_id=user, channel_id=channel, thread_ts=thread_ts, text=text
+                )
+            except Exception:
+                logger.exception("agent turn failed")
+                await say(
+                    text="すみません、処理中にエラーが発生しました。もう一度お試しください。",
+                    thread_ts=thread_ts,
+                )
+                return
+            if turn.text:
+                await say(text=turn.text, thread_ts=thread_ts)
+            for pid in turn.proposal_ids:
+                await post_card(client, pid)
+            failed = False
+        finally:
+            await acknowledged
+            running[key] -= 1
+            if not running[key]:
+                del running[key]
+            await refresh_reaction(client, channel, thread_ts, failed=failed)
 
     # --- linking -----------------------------------------------------------
     @app.action(B.A_LINK_START)
@@ -324,3 +403,5 @@ def register(app: AsyncApp, *, deps: Deps, oauth: FreeeOAuth, agent: AgentRunner
             return
         await post_card(client, row.id)
         await refresh_reaction(client, row.channel_id, row.thread_ts)
+
+    return sweep
