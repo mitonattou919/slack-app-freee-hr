@@ -59,3 +59,40 @@ async def test_link_delete(repo, tokens):
     await link_user(tokens)
     assert await repo.delete_link(USER)
     assert await repo.get_link(USER) is None
+
+
+async def test_list_thread_proposals_is_scoped_to_the_thread(repo):
+    mine = await new_proposal(repo)
+    other = await repo.create_proposal(
+        slack_user_id=USER,
+        kind="work_records",
+        payload={"kind": "work_records", "entries": []},
+        channel_id="D1",
+        thread_ts="2.0",
+        ttl=timedelta(minutes=15),
+    )
+    rows = await repo.list_thread_proposals("D1", "1.0")
+    assert [r.id for r in rows] == [mine.id]
+    assert other.id not in {r.id for r in rows}
+    assert rows[0].expires_at.tzinfo is not None
+
+
+async def test_list_proposals_by_status(repo):
+    pending = await new_proposal(repo)
+    executing = await new_proposal(repo)
+    await repo.transition(executing.id, "pending", "executing")
+    assert [r.id for r in await repo.list_proposals_by_status("pending")] == [pending.id]
+    assert [r.id for r in await repo.list_proposals_by_status("executing")] == [executing.id]
+
+
+async def test_create_all_adds_thread_index_to_existing_table(repo):
+    async def index_names() -> set[str]:
+        async with repo.engine.connect() as conn:
+            rows = await conn.exec_driver_sql("PRAGMA index_list(proposals)")
+            return {r[1] for r in rows}
+
+    async with repo.engine.begin() as conn:
+        await conn.exec_driver_sql("DROP INDEX ix_proposals_thread")  # a DB from before the index
+    assert "ix_proposals_thread" not in await index_names()
+    await repo.create_all()
+    assert "ix_proposals_thread" in await index_names()

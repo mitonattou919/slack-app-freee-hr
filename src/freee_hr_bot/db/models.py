@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text
+from sqlalchemy import JSON, DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -27,6 +27,7 @@ class Proposal(Base):
     """A write action drafted by the agent, executed only after the owner confirms in Slack."""
 
     __tablename__ = "proposals"
+    __table_args__ = (Index("ix_proposals_thread", "channel_id", "thread_ts"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     slack_user_id: Mapped[str] = mapped_column(String(32), index=True)

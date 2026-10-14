@@ -57,6 +57,8 @@ Slack DM ─(Socket Mode)─> slack_bolt ─> ADK Runner(スレッド単位の�
 2. Basic Information → App-Level Tokens で、`connections:write` を付けたトークンを作る → `SLACK_APP_TOKEN`(`xapp-...`)
 3. ワークスペースにインストールする → Bot User OAuth Token → `SLACK_BOT_TOKEN`(`xoxb-...`)
 
+マニフェストのスコープを変えたとき(例:`reactions:write` の追加)は、App Manifest を貼り直してワークスペースに再インストールする。再インストールするまで、状態を示すリアクション(👀 / ✅ / ❌)は付かない(それ以外の動作には影響しない)。
+
 ### 2. freee アプリ
 1. [freee アプリストアの開発者ページ](https://app.secure.freee.co.jp/developers/applications)でアプリを作る
 2. コールバック URL には `urn:ietf:wg:oauth:2.0:oob` を指定する
