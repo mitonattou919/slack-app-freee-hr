@@ -1,12 +1,15 @@
+import asyncio
 import json
 import logging
+from collections.abc import Sequence
 from datetime import date
 from typing import Any
 
 from slack_bolt.async_app import AsyncApp
+from slack_sdk.errors import SlackApiError
 
 from freee_hr_bot.agent.runner import AgentRunner
-from freee_hr_bot.db.models import UserLink
+from freee_hr_bot.db.models import Proposal, UserLink
 from freee_hr_bot.db.repo import utcnow
 from freee_hr_bot.freee.client import FreeeAPIError, NotLinkedError
 from freee_hr_bot.freee.hr import get_me
@@ -21,6 +24,46 @@ logger = logging.getLogger(__name__)
 
 UNLINK_WORDS = {"連携解除", "unlink"}
 
+# Status reactions on the thread's root message; exactly one is shown at a time.
+R_WORKING = "eyes"
+R_DONE = "white_check_mark"
+R_FAILED = "x"
+STATUS_REACTIONS = (R_WORKING, R_DONE, R_FAILED)
+
+
+def thread_reaction(proposals: Sequence[Proposal], *, failed: bool = False) -> str:
+    """Working while any card is still open; done only if nothing failed, was cancelled or expired.
+
+    A pending card past its TTL counts as expired even if nobody clicked it yet.
+    """
+    now = utcnow()
+    if any(
+        p.status == "executing" or (p.status == "pending" and p.expires_at >= now)
+        for p in proposals
+    ):
+        return R_WORKING
+    if failed or any(p.status != "done" for p in proposals):
+        return R_FAILED
+    return R_DONE
+
+
+async def set_reaction(client: Any, channel: str, ts: str, name: str) -> None:
+    """Make `name` the only status reaction on the message. Never raises: it is only a hint."""
+
+    async def call(method: Any, reaction: str) -> None:
+        try:
+            await method(channel=channel, timestamp=ts, name=reaction)
+        except SlackApiError as e:
+            if e.response.get("error") not in ("already_reacted", "no_reaction"):
+                logger.warning("reaction %s failed: %s", reaction, e.response.get("error"))
+        except Exception:
+            logger.warning("reaction %s failed", reaction, exc_info=True)
+
+    await asyncio.gather(
+        call(client.reactions_add, name),
+        *(call(client.reactions_remove, r) for r in STATUS_REACTIONS if r != name),
+    )
+
 
 def register(app: AsyncApp, *, deps: Deps, oauth: FreeeOAuth, agent: AgentRunner) -> None:
     ttl_minutes = int(deps.ttl.total_seconds() // 60)
@@ -34,6 +77,16 @@ def register(app: AsyncApp, *, deps: Deps, oauth: FreeeOAuth, agent: AgentRunner
             channel=row.channel_id, thread_ts=row.thread_ts, blocks=card, text="確認してください"
         )
         await deps.repo.update_proposal(row.id, message_ts=res["ts"])
+
+    async def refresh_reaction(
+        client, channel: str, thread_ts: str, *, failed: bool = False
+    ) -> None:
+        try:
+            rows = await deps.repo.list_thread_proposals(channel, thread_ts)
+        except Exception:
+            logger.warning("could not load proposals for reaction", exc_info=True)
+            return
+        await set_reaction(client, channel, thread_ts, thread_reaction(rows, failed=failed))
 
     # --- DM conversation ---------------------------------------------------
     @app.event("message")
@@ -51,11 +104,14 @@ def register(app: AsyncApp, *, deps: Deps, oauth: FreeeOAuth, agent: AgentRunner
                 text="freee との連携を解除しました。" if removed else "連携されていません。",
                 thread_ts=thread_ts,
             )
+            await refresh_reaction(client, channel, thread_ts)
             return
         if await deps.repo.get_link(user) is None:
             await say(blocks=B.link_prompt(), text="freee と連携してください", thread_ts=thread_ts)
+            await refresh_reaction(client, channel, thread_ts)
             return
 
+        await set_reaction(client, channel, thread_ts, R_WORKING)
         try:
             turn = await agent.run_turn(
                 user_id=user, channel_id=channel, thread_ts=thread_ts, text=text
@@ -66,11 +122,13 @@ def register(app: AsyncApp, *, deps: Deps, oauth: FreeeOAuth, agent: AgentRunner
                 text="すみません、処理中にエラーが発生しました。もう一度お試しください。",
                 thread_ts=thread_ts,
             )
+            await refresh_reaction(client, channel, thread_ts, failed=True)
             return
         if turn.text:
             await say(text=turn.text, thread_ts=thread_ts)
         for pid in turn.proposal_ids:
             await post_card(client, pid)
+        await refresh_reaction(client, channel, thread_ts)
 
     # --- linking -----------------------------------------------------------
     @app.action(B.A_LINK_START)
@@ -133,6 +191,7 @@ def register(app: AsyncApp, *, deps: Deps, oauth: FreeeOAuth, agent: AgentRunner
             reason = "この確認は有効期限切れです。もう一度依頼してください。"
             if await deps.repo.transition(row.id, "pending", "expired"):
                 await _finish(client, row, ["⌛ 有効期限切れ"], body)
+                await refresh_reaction(client, row.channel_id, row.thread_ts)
         if reason:
             await client.chat_postEphemeral(channel=body["channel"]["id"], user=user, text=reason)
             return None
@@ -178,11 +237,13 @@ def register(app: AsyncApp, *, deps: Deps, oauth: FreeeOAuth, agent: AgentRunner
             logger.exception("execution failed")
             await deps.repo.update_proposal(row.id, status="failed")
             await _finish(client, row, ["❌ 予期しないエラーが発生しました"], body)
+            await refresh_reaction(client, row.channel_id, row.thread_ts)
             return
         await deps.repo.update_proposal(
             row.id, status="done" if result.ok else "failed", result={"lines": result.lines}
         )
         await _finish(client, row, result.lines, body)
+        await refresh_reaction(client, row.channel_id, row.thread_ts)
         if result.overtime_suggestions:
             suggestions = [
                 {
@@ -206,6 +267,7 @@ def register(app: AsyncApp, *, deps: Deps, oauth: FreeeOAuth, agent: AgentRunner
         row = await _load_for(body, body["actions"][0]["value"], client)
         if row and await deps.repo.transition(row.id, "pending", "cancelled"):
             await _finish(client, row, ["🚫 キャンセルしました"], body)
+            await refresh_reaction(client, row.channel_id, row.thread_ts)
 
     @app.action(B.A_ROUTE)
     async def on_route(ack, body, client) -> None:
@@ -261,3 +323,4 @@ def register(app: AsyncApp, *, deps: Deps, oauth: FreeeOAuth, agent: AgentRunner
             )
             return
         await post_card(client, row.id)
+        await refresh_reaction(client, row.channel_id, row.thread_ts)

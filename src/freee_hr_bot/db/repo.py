@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import CursorResult, update
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from freee_hr_bot.db.models import Base, Proposal, UserLink, UserPreference
@@ -84,6 +84,19 @@ class Repository:
                 p.expires_at = _aware(p.expires_at)
                 p.created_at = _aware(p.created_at)
             return p
+
+    async def list_thread_proposals(self, channel_id: str, thread_ts: str) -> list[Proposal]:
+        async with self._sessions() as s:
+            rows = await s.scalars(
+                select(Proposal).where(
+                    Proposal.channel_id == channel_id, Proposal.thread_ts == thread_ts
+                )
+            )
+            proposals = list(rows)
+        for p in proposals:
+            p.expires_at = _aware(p.expires_at)
+            p.created_at = _aware(p.created_at)
+        return proposals
 
     async def update_proposal(self, proposal_id: str, **values: Any) -> None:
         async with self._sessions() as s, s.begin():

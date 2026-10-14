@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 import respx
+from slack_sdk.errors import SlackApiError
 
 from freee_hr_bot.agent.runner import TurnResult
 from freee_hr_bot.freee.oauth import TOKEN_URL
@@ -440,3 +441,165 @@ async def test_concurrent_confirms_write_once(app, deps, slack):
         *(confirm(ack=AsyncMock(), body=action_body(row.id), client=slack) for _ in range(5))
     )
     assert put.call_count == 1
+
+
+# --- status reactions ---------------------------------------------------------------
+def added(slack: AsyncMock) -> list[str]:
+    return [c.kwargs["name"] for c in slack.reactions_add.call_args_list]
+
+
+def removed(slack: AsyncMock) -> set[str]:
+    return {c.kwargs["name"] for c in slack.reactions_remove.call_args_list}
+
+
+async def test_message_is_marked_working_then_done(app, agent, slack):
+    seen_during_turn: list[str] = []
+    agent.run_turn.side_effect = lambda **_: (
+        seen_during_turn.extend(added(slack)) or TurnResult(text="今月の残業は 3 時間です")
+    )
+    await listener(app, "event", "message")(
+        event=dm_event("今月の残業は?"), client=slack, say=AsyncMock()
+    )
+    assert seen_during_turn == ["eyes"]
+    assert added(slack) == ["eyes", "white_check_mark"]
+    assert slack.reactions_add.call_args.kwargs == {
+        "channel": DM,
+        "timestamp": THREAD,
+        "name": "white_check_mark",
+    }
+    assert "eyes" in removed(slack)
+
+
+async def test_reply_in_thread_reacts_on_the_root_message(app, slack):
+    await listener(app, "event", "message")(
+        event=dm_event("続き", ts="150.0", thread_ts="50.0"), client=slack, say=AsyncMock()
+    )
+    assert {c.kwargs["timestamp"] for c in slack.reactions_add.call_args_list} == {"50.0"}
+
+
+async def test_message_stays_working_while_card_is_open(app, deps, agent, slack):
+    row = await make_proposal(deps, work_payload())
+    agent.run_turn.return_value = TurnResult(text="確認してください", proposal_ids=[row.id])
+    await listener(app, "event", "message")(
+        event=dm_event("今日 9-18"), client=slack, say=AsyncMock()
+    )
+    assert set(added(slack)) == {"eyes"}
+
+
+async def test_agent_failure_is_marked_failed(app, agent, slack):
+    agent.run_turn.side_effect = RuntimeError("boom")
+    await listener(app, "event", "message")(event=dm_event("x"), client=slack, say=AsyncMock())
+    assert added(slack) == ["eyes", "x"]
+
+
+@pytest.mark.parametrize("text,user", [("連携解除", USER), ("hi", OTHER)])
+async def test_replies_without_agent_are_marked_done(app, slack, text, user):
+    await listener(app, "event", "message")(
+        event=dm_event(text, user=user), client=slack, say=AsyncMock()
+    )
+    assert added(slack) == ["white_check_mark"]
+
+
+@respx.mock
+async def test_confirm_marks_thread_done(app, deps, slack):
+    respx.put(f"{API}/employees/{EMPLOYEE_ID}/work_records/2026-09-29").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    row = await make_proposal(deps, work_payload())
+    await listener(app, "action", B.A_CONFIRM)(
+        ack=AsyncMock(), body=action_body(row.id), client=slack
+    )
+    assert slack.reactions_add.call_args.kwargs == {
+        "channel": DM,
+        "timestamp": THREAD,
+        "name": "white_check_mark",
+    }
+    assert removed(slack) == {"eyes", "x"}
+
+
+@respx.mock
+async def test_thread_is_done_only_after_every_card_is_settled(app, deps, slack):
+    respx.put(f"{API}/employees/{EMPLOYEE_ID}/work_records/2026-09-29").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    respx.post(f"{API}/approval_requests/paid_holidays").mock(
+        return_value=httpx.Response(201, json={"paid_holiday": {"id": 1}})
+    )
+    first = await make_proposal(deps, work_payload())
+    second = await make_proposal(deps, leave_payload(5))
+    confirm = listener(app, "action", B.A_CONFIRM)
+    await confirm(ack=AsyncMock(), body=action_body(first.id), client=slack)
+    assert added(slack) == ["eyes"]
+    await confirm(ack=AsyncMock(), body=action_body(second.id), client=slack)
+    assert (await deps.repo.get_proposal(second.id)).status == "done"
+    assert added(slack) == ["eyes", "white_check_mark"]
+
+
+@respx.mock
+async def test_freee_error_marks_thread_failed(app, deps, slack):
+    respx.post(f"{API}/approval_requests/paid_holidays").mock(
+        return_value=httpx.Response(400, json={"message": "有給残日数が不足しています"})
+    )
+    row = await make_proposal(deps, leave_payload(5))
+    await listener(app, "action", B.A_CONFIRM)(
+        ack=AsyncMock(), body=action_body(row.id), client=slack
+    )
+    assert added(slack) == ["x"]
+
+
+async def test_cancel_marks_thread_failed(app, deps, slack):
+    row = await make_proposal(deps, work_payload())
+    await listener(app, "action", B.A_CANCEL)(
+        ack=AsyncMock(), body=action_body(row.id), client=slack
+    )
+    assert added(slack) == ["x"]
+
+
+async def test_expiry_marks_thread_failed(app, deps, slack):
+    row = await make_proposal(deps, work_payload(), ttl=timedelta(seconds=-1))
+    await listener(app, "action", B.A_CONFIRM)(
+        ack=AsyncMock(), body=action_body(row.id), client=slack
+    )
+    assert added(slack) == ["x"]
+
+
+async def test_unclicked_expired_card_does_not_keep_thread_working(app, deps, slack):
+    await make_proposal(deps, work_payload(), ttl=timedelta(seconds=-1))
+    live = await make_proposal(deps, work_payload())
+    await listener(app, "action", B.A_CANCEL)(
+        ack=AsyncMock(), body=action_body(live.id), client=slack
+    )
+    assert added(slack) == ["x"]
+
+
+async def test_reaction_errors_do_not_break_the_reply(app, slack):
+    slack.reactions_add.side_effect = SlackApiError("nope", {"error": "missing_scope"})
+    slack.reactions_remove.side_effect = RuntimeError("network")
+    say = AsyncMock()
+    await listener(app, "event", "message")(event=dm_event("hi"), client=slack, say=say)
+    assert say.call_args.kwargs == {"text": "了解", "thread_ts": THREAD}
+
+
+@respx.mock
+async def test_overtime_draft_puts_thread_back_to_working(app, deps, slack):
+    respx.get(f"{API}/approval_flow_routes").mock(
+        return_value=httpx.Response(200, json={"approval_flow_routes": [{"id": 5, "name": "標準"}]})
+    )
+    respx.get(f"{API}/approval_requests/overtime_works/setting").mock(
+        return_value=httpx.Response(200, json={"should_reflect_in_work_record": False})
+    )
+    meta = {
+        "date": "2026-09-29",
+        "start": "18:00",
+        "end": "21:00",
+        "thread_ts": THREAD,
+        "channel_id": DM,
+    }
+    view = {
+        "private_metadata": json.dumps(meta),
+        "state": {"values": {"reason": {"value": {"value": "リリース対応"}}}},
+    }
+    await listener(app, "view", B.V_OVERTIME_REASON)(
+        ack=AsyncMock(), body={"user": {"id": USER}}, view=view, client=slack
+    )
+    assert added(slack) == ["eyes"]

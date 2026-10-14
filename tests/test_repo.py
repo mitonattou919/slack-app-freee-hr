@@ -59,3 +59,19 @@ async def test_link_delete(repo, tokens):
     await link_user(tokens)
     assert await repo.delete_link(USER)
     assert await repo.get_link(USER) is None
+
+
+async def test_list_thread_proposals_is_scoped_to_the_thread(repo):
+    mine = await new_proposal(repo)
+    other = await repo.create_proposal(
+        slack_user_id=USER,
+        kind="work_records",
+        payload={"kind": "work_records", "entries": []},
+        channel_id="D1",
+        thread_ts="2.0",
+        ttl=timedelta(minutes=15),
+    )
+    rows = await repo.list_thread_proposals("D1", "1.0")
+    assert [r.id for r in rows] == [mine.id]
+    assert other.id not in {r.id for r in rows}
+    assert rows[0].expires_at.tzinfo is not None
